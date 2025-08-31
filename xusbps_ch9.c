@@ -58,6 +58,14 @@
 #define printf xil_printf
 #endif
 
+// temporary GPIO implement
+#include "xgpiops.h"
+extern XGpioPs Gpio;
+#define LED_MIO        9
+
+//bulk read
+extern void App_OnConfigured(XUsbPs *ip);
+
 /************************** Constant Definitions *****************************/
 /**************************** Type Definitions *******************************/
 
@@ -498,7 +506,7 @@ static int XUsbPs_HandleVendorReq(XUsbPs *InstancePtr, XUsbPs_SetupData *S)
     }
 
     // 2) My requests examples!!!
-//    switch ((u8)S->bRequest) {
+    switch ((u8)S->bRequest) {
 //
 //    case REQ_GET_FW_VERSION: {           // IN, return two byted
 //        if (!isIn) { XUsbPs_EpStall(InstancePtr, Ep0, XUSBPS_EP_DIRECTION_OUT); return XST_FAILURE; }
@@ -507,21 +515,45 @@ static int XUsbPs_HandleVendorReq(XUsbPs *InstancePtr, XUsbPs_SetupData *S)
 //        return XUsbPs_EpBufferSend(InstancePtr, Ep0, reply, n);
 //    }
 //
-//    case REQ_SET_LED: {                  // OUT, receive 1 byte
-//        if (isIn || S->wLength == 0) { XUsbPs_EpStall(InstancePtr, Ep0, XUSBPS_EP_DIRECTION_IN); return XST_FAILURE; }
-//
-//        // Get data phase on EP0 OUT
-//        u8 *buf; u32 len; u32 handle;
-//        int st = XUsbPs_EpBufferReceive(InstancePtr, Ep0, &buf, &len, &handle);
-//        if (st != XST_SUCCESS) return XST_FAILURE;
-//
-//        // here is buf[0] – new state
-//        // TODO: apply
-//        XUsbPs_EpBufferRelease(handle);
-//
-//        // status-stage — zero packet
-//        return XUsbPs_EpBufferSend(InstancePtr, Ep0, NULL, 0);
-//    }
+    case REQ_SET_LED: {                  // OUT, 1 байт payload
+        if (isIn || S->wLength == 0) {
+            XUsbPs_EpStall(InstancePtr, Ep0, XUSBPS_EP_DIRECTION_IN);
+            return XST_FAILURE;
+        }
+
+        // 1) Re-prime EP0 OUT на data phase
+        XUsbPs_EpPrime(InstancePtr, Ep0, XUSBPS_EP_DIRECTION_OUT);
+
+        // 2) Подождать, пока бит PRIME установится/сбросится
+        int Timeout = XUSBPS_TIMEOUT_COUNTER;   // возьми как в шаблоне (напр. 1000000)
+        u32 reg;
+        do {
+            reg = XUsbPs_ReadReg(InstancePtr->Config.BaseAddress, XUSBPS_EPPRIME_OFFSET);
+        } while (((reg & (1u << Ep0)) != 0u) && --Timeout);
+        if (!Timeout) return XST_FAILURE;
+
+        // 3) Забрать payload с EP0 OUT (не ждём IRQ)
+        u8  *buf; u32 len; u32 handle;
+        Timeout = XUSBPS_TIMEOUT_COUNTER;
+        int st;
+        do {
+            st = XUsbPs_EpBufferReceive(InstancePtr, Ep0, &buf, &len, &handle);
+        } while ((st != XST_SUCCESS) && --Timeout);
+        if (!Timeout) return XST_FAILURE;
+
+        // 4) Инвалидируем кэш и применяем
+        Xil_DCacheInvalidateRange((UINTPTR)buf, len);
+        if (len >= 1) {
+            // !!! здесь реальное управление пином
+            XGpioPs_WritePin(&Gpio, LED_MIO, (buf[0] & 1));  // 0/1 из payload
+            // для отладки можно вывести:
+            // xil_printf("SET_LED: val=%d len=%lu\r\n", buf[0], (unsigned long)len);
+        }
+
+        // 5) Освобождаем буфер и шлём ZLP (status stage)
+        XUsbPs_EpBufferRelease(handle);
+        return XUsbPs_EpBufferSend(InstancePtr, Ep0, NULL, 0);
+    }
 //
 //    case REQ_READ_REG: {                 // IN, address to wIndex/wValue
 //        if (!isIn) { XUsbPs_EpStall(InstancePtr, Ep0, XUSBPS_EP_DIRECTION_OUT); return XST_FAILURE; }
@@ -543,10 +575,10 @@ static int XUsbPs_HandleVendorReq(XUsbPs *InstancePtr, XUsbPs_SetupData *S)
 //        return XUsbPs_EpBufferSend(InstancePtr, Ep0, NULL, 0);
 //    }
 //
-//    default:
-//        // Unknown vendor-request → STALL to request
-//        XUsbPs_EpStall(InstancePtr, Ep0, isIn ? XUSBPS_EP_DIRECTION_IN : XUSBPS_EP_DIRECTION_OUT);
-//        return XST_FAILURE;
-//    }
+    default:
+        // Unknown vendor-request → STALL to request
+        XUsbPs_EpStall(InstancePtr, Ep0, isIn ? XUSBPS_EP_DIRECTION_IN : XUSBPS_EP_DIRECTION_OUT);
+        return XST_FAILURE;
+    }
 }
 

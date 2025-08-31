@@ -4,6 +4,11 @@
 #include "platform.h"
 #include "xil_printf.h"
 
+#include "xgpiops.h"
+#define LED_MIO        9
+
+ XGpioPs  Gpio;
+
 // needed for USB
 #include "xparameters.h"
 #include "xusbps.h"
@@ -51,10 +56,35 @@ static volatile int NumIrqs = 0;
 static volatile int NumReceivedFrames = 0;
 static XUsbPs_Local UsbLocal;
 
+
+//// init buffer
+
+static u8 g_bulk512[512] ALIGNMENT_CACHELINE;
+
+void App_OnConfigured(XUsbPs *ip)
+{
+    // заполняем чем угодно
+    for (int i = 0; i < 512; ++i) g_bulk512[i] = (u8)i;
+    Xil_DCacheFlushRange((UINTPTR)g_bulk512, 512);
+
+    // кладём буфер в IN-очередь EP1
+    (void)XUsbPs_EpBufferSend(ip, 1, g_bulk512, 512);
+}
+
+
+
 int main(void) {
 	init_platform();
+	//GPIO init
+	XGpioPs_Config *GpioCfg = XGpioPs_LookupConfig(XPAR_XGPIOPS_0_DEVICE_ID);
+	    if (!GpioCfg) return -1;
+	    if (XGpioPs_CfgInitialize(&Gpio, GpioCfg, GpioCfg->BaseAddr) != XST_SUCCESS) return -1;
+	    XGpioPs_SetDirectionPin(&Gpio, LED_MIO, 1);
+	    XGpioPs_SetOutputEnablePin(&Gpio, LED_MIO, 1);
+	    XGpioPs_WritePin(&Gpio, LED_MIO, 1);
 
 	print("Hello World\n\r");
+	xil_printf("SET_LED called\n");
 
 	UsbLocal.CurrentConfig = 0;
 	UsbInstance.UserDataPtr = &UsbLocal;
